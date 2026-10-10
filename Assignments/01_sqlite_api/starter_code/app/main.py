@@ -222,17 +222,164 @@ def q10_top_products(
     return run_query(db, Q10_SQL)
 
 # Phase 3 -- each has a slow route and a /fast route ------------------------ #
+# SLOW
+Q11_SLOW_SQL = """
+SELECT purchase_id, customer_id, product_id, amount, purchase_date
+FROM purchases
+ORDER BY purchase_id
+LIMIT 50 OFFSET :offset
+"""
 
-# TODO Q11  GET /purchases/page?offset=        GET /purchases/page/fast?after_id=
-# TODO Q12  GET /purchases/sample              GET /purchases/sample/fast
-# TODO Q13  GET /stats/revenue-by-month        GET /stats/revenue-by-month/fast
-# TODO Q14  GET /reports/cube?start=&end=&min_purchases=
-#                                              GET /reports/cube/fast?(same)
+@app.get("/purchases/page", dependencies=[Depends(require_api_key)])
+def q11_purchase_page_slow(
+    offset: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q11_SLOW_SQL, {"offset": offset})
+
+# FAST
+Q11_FAST_SQL = """
+SELECT purchase_id, customer_id, product_id, amount, purchase_date
+FROM purchases
+WHERE purchase_id > :after_id
+ORDER BY purchase_id
+LIMIT 50
+"""
+
+@app.get("/purchases/page/fast", dependencies=[Depends(require_api_key)])
+def q11_purchase_page_fast(
+    after_id: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q11_FAST_SQL, {"after_id": after_id})
+
+# SLOW
+Q12_SLOW_SQL = """
+SELECT purchase_id, customer_id, product_id, amount, purchase_date
+FROM purchases
+ORDER BY random()
+LIMIT 10
+"""
+
+@app.get("/purchases/sample", dependencies=[Depends(require_api_key)])
+def q12_sample_slow(
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q12_SLOW_SQL)
+
+# FAST
+Q12_FAST_SQL = """
+SELECT purchase_id, customer_id, product_id, amount, purchase_date
+FROM purchases
+WHERE purchase_id IN (:id1, :id2, :id3, :id4, :id5, :id6, :id7, :id8, :id9, :id10)
+"""
+
+@app.get("/purchases/sample/fast", dependencies=[Depends(require_api_key)])
+def q12_sample_fast(db: sqlite3.Connection = Depends(get_exp_db)):
+    max_id = db.execute("SELECT MAX(purchase_id) FROM purchases").fetchone()[0]
+    ids = random.sample(range(1, max_id + 1), 10)
+    params = {f"id{i}": v for i, v in enumerate(ids, start=1)}
+    return run_query(db, Q12_FAST_SQL, params)
+
+# SLOW
+Q13_SLOW_SQL = """
+SELECT substr(purchase_date, 1, 7) AS month,
+       COUNT(*) AS num_purchases, ROUND(SUM(amount), 2) AS revenue
+FROM purchases
+GROUP BY month
+ORDER BY month
+"""
+
+@app.get("/stats/revenue-by-month", dependencies=[Depends(require_api_key)])
+def q13_revenue_by_month_slow(
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q13_SLOW_SQL)
+
+# FAST
+Q13_FAST_SQL = """
+SELECT month, SUM(num_purchases) AS num_purchases, ROUND(SUM(revenue), 2) AS revenue
+FROM monthly_sales
+GROUP BY month
+ORDER BY month
+"""
+
+@app.get("/stats/revenue-by-month/fast", dependencies=[Depends(require_api_key)])
+def q13_revenue_by_month_fast(
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q13_FAST_SQL)
+
+# SLOW
+Q14_SLOW_SQL = """
+WITH base AS (
+    SELECT z.state_code, pu.department,
+           substr(pu.purchase_date, 1, 7) AS month, pu.amount
+    FROM purchases pu
+    JOIN customers c ON c.customer_id = pu.customer_id
+    JOIN zipcodes  z ON z.zipcode     = c.zipcode
+    WHERE pu.purchase_date >= :start AND pu.purchase_date < :end
+),
+cube AS (
+    SELECT state_code, department, month,
+           COUNT(*) AS num_purchases, SUM(amount) AS revenue
+    FROM base
+    GROUP BY state_code, department, month
+)
+SELECT state_code, department, month, num_purchases, ROUND(revenue, 2) AS revenue
+FROM cube
+WHERE num_purchases >= :min_purchases
+ORDER BY revenue DESC
+LIMIT 50
+"""
+
+@app.get("/reports/cube", dependencies=[Depends(require_api_key)])
+def q14_reports_slow(
+    start: str,
+    end: str,
+    min_purchases: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q14_SLOW_SQL, {"start": start, "end": end, "min_purchases": min_purchases})
+
+# FAST
+Q14_FAST_SQL = """
+SELECT state_code, department, month, num_purchases, ROUND(revenue, 2) AS revenue
+FROM monthly_sales
+WHERE month >= substr(:start, 1, 7) AND month < substr(:end, 1, 7)
+  AND num_purchases >= :min_purchases
+ORDER BY revenue DESC
+LIMIT 50
+"""
+
+@app.get("/reports/cube/fast", dependencies=[Depends(require_api_key)])
+def q14_reports_slow(
+    start: str,
+    end:str,
+    min_purchases,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q14_FAST_SQL, {"start": start, "end": end, "min_purchases": min_purchases})
 
 # Phase 4 ------------------------------------------------------------------- #
+from .models import NewPurchase
 
-# TODO Q15  POST /purchases   (the full code is in QUERIES.md)
-
+@app.post("/purchases", status_code=201, dependencies=[Depends(require_api_key)])
+def q15_create_purchase(body: NewPurchase, db: sqlite3.Connection = Depends(get_exp_db)):
+    try:
+        with db:  # BEGIN ... COMMIT, or ROLLBACK if anything raises
+            row = db.execute(
+                """
+                INSERT INTO purchases
+                    (customer_id, card_id, product_id, department, amount, purchase_date)
+                VALUES (:customer_id, :card_id, :product_id, :department, :amount, :purchase_date)
+                RETURNING purchase_id, customer_id, product_id, department, amount, purchase_date
+                """,
+                body.model_dump(mode="json"),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:   # "database is locked"
+        raise HTTPException(503, f"database error: {exc}") from exc
+    return dict(row)
 
 # --------------------------------------------------------------------------- #
 # Dev entrypoint:  python -m app.main   (run from the starter folder)
