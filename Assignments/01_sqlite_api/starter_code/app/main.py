@@ -39,21 +39,6 @@ def root() -> RedirectResponse:
 def health() -> dict:
     return {"ok": True}
 
-
-# --------------------------------------------------------------------------- #
-# SQL -- copied from ../QUERIES.md
-# --------------------------------------------------------------------------- #
-
-Q01_SQL = """
-SELECT c.customer_id, c.first_name, c.last_name, c.email, c.zipcode, z.state_code
-FROM customers c
-JOIN zipcodes z ON z.zipcode = c.zipcode
-WHERE c.customer_id = :customer_id
-"""
-
-# TODO: Q02_SQL ... Q14_FAST_SQL
-
-
 # --------------------------------------------------------------------------- #
 # Routes
 #
@@ -62,14 +47,46 @@ WHERE c.customer_id = :customer_id
 # --------------------------------------------------------------------------- #
 
 # Phase 1 ------------------------------------------------------------------- #
+Q01_SQL = """
+SELECT c.customer_id, c.first_name, c.last_name, c.email, c.zipcode, z.state_code
+FROM customers c
+JOIN zipcodes z ON z.zipcode = c.zipcode
+WHERE c.customer_id = :customer_id
+"""
 
 @app.get("/customers/{customer_id}", dependencies=[Depends(require_api_key)])
 def q01_customer(customer_id: int, db: sqlite3.Connection = Depends(get_exp_db)):
     return run_query(db, Q01_SQL, {"customer_id": customer_id})
 
+Q02_SQL = """
+SELECT product_id, product_name, unit_price
+FROM products
+ORDER BY product_id
+LIMIT :limit OFFSET :offset
+"""
+@app.get("/products", dependencies=[Depends(require_api_key)])
+def q02_product(
+    limit: int,
+    offset: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q02_SQL, {"limit": limit, "offset": offset})
 
-# TODO Q02  GET /products?limit=&offset=
-# TODO Q03  GET /purchases?start=&end=
+Q03_SQL = """
+SELECT purchase_id, customer_id, product_id, department, amount, purchase_date
+FROM purchases
+WHERE purchase_date >= :start AND purchase_date < :end
+ORDER BY purchase_date
+LIMIT 100
+"""
+
+@app.get("/purchases", dependencies=[Depends(require_api_key)])
+def q03_purchase(
+    start: str,
+    end: str,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q03_SQL, {"start": start, "end": end})
 
 # Phase 2 ------------------------------------------------------------------- #
 
