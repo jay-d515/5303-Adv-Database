@@ -55,7 +55,9 @@ WHERE c.customer_id = :customer_id
 """
 
 @app.get("/customers/{customer_id}", dependencies=[Depends(require_api_key)])
-def q01_customer(customer_id: int, db: sqlite3.Connection = Depends(get_exp_db)):
+def q01_customer(
+    customer_id: int,
+    db: sqlite3.Connection = Depends(get_exp_db)):
     return run_query(db, Q01_SQL, {"customer_id": customer_id})
 
 Q02_SQL = """
@@ -89,14 +91,135 @@ def q03_purchase(
     return run_query(db, Q03_SQL, {"start": start, "end": end})
 
 # Phase 2 ------------------------------------------------------------------- #
+Q04_SQL = """
+SELECT pu.purchase_id, pu.purchase_date, pr.product_name, pu.department, pu.amount
+FROM purchases pu
+JOIN products pr ON pr.product_id = pu.product_id
+WHERE pu.customer_id = :customer_id
+ORDER BY pu.purchase_date DESC
+LIMIT 100
+"""
 
-# TODO Q04  GET /customers/{customer_id}/purchases
-# TODO Q05  GET /stats/department-count?department=
-# TODO Q06  GET /customers/{customer_id}/streaks
-# TODO Q07  GET /stats/leaderboard?start=&end=
-# TODO Q08  GET /products/dead?state=
-# TODO Q09  GET /stats/revenue-by-state
-# TODO Q10  GET /products/top
+@app.get("/customers/{customer_id}/purchases", dependencies=[Depends(require_api_key)])
+def q04_customer_purchase(
+    customer_id: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q04_SQL, {"customer_id": customer_id})
+
+Q05_SQL = """
+SELECT COUNT(*) AS num_purchases
+FROM purchases
+WHERE department = :department
+"""
+
+@app.get("/stats/department-count", dependencies=[Depends(require_api_key)])
+def q05_department_count(
+    department: str,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q05_SQL, {"department": department})
+
+Q06_SQL = """
+WITH days AS (
+    SELECT DISTINCT purchase_date AS day
+    FROM purchases
+    WHERE customer_id = :customer_id
+),
+islands AS (
+    SELECT day,
+           julianday(day) - ROW_NUMBER() OVER (ORDER BY day) AS grp
+    FROM days
+)
+SELECT MIN(day) AS streak_start, MAX(day) AS streak_end, COUNT(*) AS days
+FROM islands
+GROUP BY grp
+HAVING COUNT(*) >= 2
+ORDER BY days DESC, streak_start
+LIMIT 10
+"""
+
+@app.get("/customers/{customer_id}/streaks", dependencies=[Depends(require_api_key)])
+def q06_customer_streaks(
+    customer_id: int,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q06_SQL, {"customer_id": customer_id})
+
+Q07_SQL = """
+WITH spend AS (
+    SELECT customer_id, SUM(amount) AS total
+    FROM purchases
+    WHERE purchase_date >= :start AND purchase_date < :end
+    GROUP BY customer_id
+)
+SELECT customer_id, ROUND(total, 2) AS total,
+       RANK() OVER (ORDER BY total DESC) AS rank
+FROM spend
+ORDER BY total DESC
+LIMIT 20
+"""
+
+@app.get("/stats/leaderboard", dependencies=[Depends(require_api_key)])
+def q07_stats_leaderboard(
+    start: str,
+    end: str,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q07_SQL, {"start": start, "end": end})
+
+Q08_SQL = """
+SELECT pr.product_id, pr.product_name
+FROM products pr
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM purchases pu
+    JOIN customers c ON c.customer_id = pu.customer_id
+    JOIN zipcodes  z ON z.zipcode     = c.zipcode
+    WHERE pu.product_id = pr.product_id
+      AND z.state_code  = :state
+)
+ORDER BY pr.product_id
+LIMIT 100
+"""
+
+@app.get("/products/dead", dependencies=[Depends(require_api_key)])
+def q08_dead_state_products(
+    state: str,
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q08_SQL, {"state": state})
+
+Q09_SQL = """
+SELECT z.state_code, COUNT(*) AS num_purchases, ROUND(SUM(pu.amount), 2) AS revenue
+FROM purchases pu
+JOIN customers c ON c.customer_id = pu.customer_id
+JOIN zipcodes  z ON z.zipcode     = c.zipcode
+GROUP BY z.state_code
+ORDER BY revenue DESC
+"""
+
+@app.get("/stats/revenue-by-state", dependencies=[Depends(require_api_key)])
+def q09_revenue_by_state(
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q09_SQL)
+
+Q10_SQL = """
+SELECT pr.product_id, pr.product_name,
+       COUNT(*) AS num_purchases, ROUND(SUM(pu.amount), 2) AS revenue
+FROM purchases pu
+JOIN products pr ON pr.product_id = pu.product_id
+GROUP BY pr.product_id
+ORDER BY revenue DESC
+LIMIT 10
+"""
+
+@app.get("/products/top", dependencies=[Depends(require_api_key)])
+def q10_top_products(
+    db: sqlite3.Connection = Depends(get_exp_db),
+):
+    return run_query(db, Q10_SQL)
 
 # Phase 3 -- each has a slow route and a /fast route ------------------------ #
 
